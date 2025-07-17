@@ -37,8 +37,8 @@ void setup() {
 }
 
 void loop() {
+  static unsigned long lastCheck = 0;
   if (frame == 1) {
-    // Nhập ID thiết bị muốn kết nối qua Serial
     if (Serial.available()) {
       String input = Serial.readStringUntil('\n');
       input.trim();
@@ -46,17 +46,22 @@ void loop() {
         selectedDevice = input;
         frame = 2;
         showFrame2();
+        lastCheck = millis(); // reset timer khi chuyển frame
       }
     }
     // TODO: Có thể thêm nút nhấn để chọn hội thoại từ danh sách
   } else if (frame == 2) {
-    // Nhập tin nhắn mới qua Serial
+    // Kiểm tra tin nhắn mới mỗi 3 giây
+    if (millis() - lastCheck > 3000) {
+      checkNewMessage();
+      lastCheck = millis();
+    }
     if (Serial.available()) {
       String msg = Serial.readStringUntil('\n');
       msg.trim();
       if (msg.length() > 0 && msg.length() <= 50) {
         sendMessage(msg);
-        showFrame2(); // refresh lại frame chat
+        showFrame2();
       }
     }
     // TODO: Thêm nút nhấn để quay lại frame 1
@@ -136,5 +141,37 @@ void sendMessage(String content) {
     http.end();
   } else {
     tft.println("WiFi loi!");
+  }
+}
+
+void checkNewMessage() {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(serverInbox) + deviceId + "&with=" + selectedDevice;
+    http.begin(url);
+    int httpResponseCode = http.GET();
+    if (httpResponseCode == 200) {
+      String payload = http.getString();
+      if (payload != lastMessage && payload.length() > 0) {
+        lastMessage = payload;
+        tft.fillScreen(TFT_BLACK);
+        tft.setCursor(0, 0);
+        tft.print("Chat voi: ");
+        tft.println(selectedDevice);
+        tft.println("Lich su tin nhan:");
+        payload.replace('[', ' ');
+        payload.replace(']', ' ');
+        payload.replace('"', ' ');
+        payload.trim();
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.println(payload);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        // Báo còi khi có tin nhắn mới
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(200);
+        digitalWrite(BUZZER_PIN, LOW);
+      }
+    }
+    http.end();
   }
 }

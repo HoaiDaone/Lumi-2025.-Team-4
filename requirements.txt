@@ -5,4 +5,3 @@ Flask-Migrate
 pymysql
 pytest
 requests
-# TFT_eSPI: Thư viện này chỉ dùng cho Arduino, cài qua Arduino Library Manager, không dùng pip
