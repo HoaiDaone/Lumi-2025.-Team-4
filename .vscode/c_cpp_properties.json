@@ -3,7 +3,10 @@
         {
             "name": "Win32",
             "includePath": [
+                "D:/ArduinoProject/Lumi-2025.-Team-4/Ui",
                 "${workspaceFolder}/**",
+                "C:/MinGW/include"
+                "C:/MinGW/lib/gcc/mingw32/6.3.0/include",
                 "C:/msys64/ucrt64/include",
                 "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/15.1.0/include"
             ],
@@ -13,7 +16,7 @@
                 "_UNICODE"
             ],
             "compilerPath": "C:/msys64/ucrt64/bin/g++.exe",
-            "intelliSenseMode": "windows-msvc-x64"
+            "intelliSenseMode": "gcc-x64"
         }
     ],
     "version": 4

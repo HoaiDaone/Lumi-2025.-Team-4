@@ -1,6 +1,7 @@
 {
     "files.associations": {
         "ostream": "cpp",
-        "print": "cpp"
+        "print": "cpp",
+        "ui.h": "c"
     }
 }
