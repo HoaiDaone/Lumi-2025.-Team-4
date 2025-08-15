@@ -45,7 +45,8 @@ enum AppState {
   STATE_MAIL_LIST,
   STATE_MAIL_CONV,
   STATE_MAIL_WRITE,
-  STATE_HELP
+  STATE_HELP,
+  STATE_ADD_ID
 };
 AppState state = STATE_MAIN_MENU;
 
@@ -53,6 +54,10 @@ AppState state = STATE_MAIN_MENU;
 int main_index = 0;            // 0: Mail, 1: Help
 int mail_index = 0;
 int conv_index = 0;
+
+// Biến nhập ID mới cho inbox
+char new_id_buf[64] = "";
+int new_id_len = 0;
 
 // Dữ liệu giả lập mail / conversation
 #define MAX_MAILS 6
@@ -277,6 +282,60 @@ void drawWriteScreen() {
 
 }
 
+// Add ID screen (similar to write)
+void drawAddIdScreen() {
+  tft.fillScreen(ST77XX_WHITE);
+  drawHeader("Add New Device");
+
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_BLACK);
+
+  tft.setCursor(6, 36);
+  tft.print("ID: ");
+  // print buffer
+  tft.setCursor(6, 48);
+  tft.print(new_id_buf);
+
+  // Draw QWERTY grid
+  tft.setTextSize(1);
+  int cell_w = 12; // cell pixel width
+  int cell_h = 12;
+  int top_y = 68;
+  for (int r = 0; r < KB_ROWS; r++) {
+    int row_len = kb_row_lengths[r];
+    int row_width = row_len * cell_w;
+    int start_x = (160 - row_width) / 2;
+    for (int c = 0; c < row_len; c++) {
+      int idx = 0;
+      // compute global index for (r,c)
+      int acc = 0;
+      for (int rr = 0; rr < r; rr++) acc += kb_row_lengths[rr];
+      idx = acc + c;
+
+      int x = start_x + c * cell_w;
+      int y = top_y + r * (cell_h + 2);
+
+      if (idx == char_index) {
+        // highlight selected key
+        tft.fillRect(x-1, y-1, cell_w+2, cell_h+2, ST77XX_BLUE);
+        tft.setTextColor(ST77XX_WHITE);
+        tft.setCursor(x+2, y+1);
+        tft.print(getKeyAtIndex(idx));
+        tft.setTextColor(ST77XX_BLACK);
+      } else {
+        // normal key
+        tft.drawRect(x-1, y-1, cell_w+2, cell_h+2, ST77XX_BLACK);
+        tft.setCursor(x+2, y+1);
+        tft.print(getKeyAtIndex(idx));
+      }
+    }
+  }
+
+  tft.setCursor(6, 110);
+  tft.setTextColor(ST77XX_BLUE);
+  tft.print("SEND: Confirm  CANCEL: Back");
+}
+
 // Help screen
 void drawHelp() {
   tft.fillScreen(ST77XX_WHITE);
@@ -299,6 +358,12 @@ void drawHelp() {
   tft.setTextColor(ST77XX_BLUE);
   tft.print("CANCEL: Back");
 }
+
+// Khai báo hàm checkDeviceIdExists ở đầu file
+bool checkDeviceIdExists(const String &id);
+
+// Khai báo hàm checkSendButton ở đầu file
+void checkSendButton();
 
 // --- Input (button) helpers ---
 bool pressedUp() {
@@ -378,6 +443,66 @@ void fetchInboxFromServer(const String &deviceId, int mailIdx) {
   }
 }
 
+// Định nghĩa hàm checkDeviceIdExists
+bool checkDeviceIdExists(const String &id) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(SERVER_BASE_URL) + "/devices/?id=" + id;
+    http.begin(url);
+    int httpResponseCode = http.GET();
+    bool exists = false;
+    if (httpResponseCode == 200) {
+      String payload = http.getString();
+      exists = (payload.indexOf(id) >= 0);
+    }
+    http.end();
+    return exists;
+  }
+  return false;
+}
+
+// Định nghĩa hàm checkSendButton nếu chưa có
+void checkSendButton() {
+  static bool sendWasDown = false;
+  if (digitalRead(BTN_SEND) == LOW) {
+    if (!sendWasDown) {
+      sendWasDown = true;
+      if (state == STATE_MAIL_WRITE && write_len > 0) {
+        sendMessageNetwork(write_buf, mail_ids[mail_index]);
+        write_len = 0;
+        write_buf[0] = '\0';
+        state = STATE_MAIL_CONV;
+        drawConversation();
+        beep(100);
+      } else if (state == STATE_ADD_ID && new_id_len > 0) {
+        String id = String(new_id_buf);
+        if (checkDeviceIdExists(id)) {
+          if (mail_count < MAX_MAILS) {
+            mail_ids[mail_count] = id;
+            convs[mail_count].size = 0;
+            mail_count++;
+            mail_index = mail_count - 1;
+          }
+          new_id_len = 0;
+          new_id_buf[0] = '\0';
+          state = STATE_MAIL_LIST;
+          drawMailList();
+          beep(100);
+        } else {
+          tft.fillRect(0, 110, 160, 18, ST77XX_WHITE);
+          tft.setCursor(6, 110);
+          tft.setTextColor(ST77XX_RED);
+          tft.print("ID not found!");
+          delay(2000);
+          drawAddIdScreen();
+        }
+      }
+    }
+  } else {
+    sendWasDown = false;
+  }
+}
+
 // --- Setup & loop ---
 void setupPins() {
   pinMode(BUZZER_PIN, OUTPUT); digitalWrite(BUZZER_PIN, LOW);
@@ -387,6 +512,7 @@ void setupPins() {
   pinMode(BTN_DOWN, INPUT_PULLUP);
   pinMode(BTN_OK, INPUT_PULLUP);
   pinMode(BTN_CANCEL, INPUT_PULLUP);
+  pinMode(BTN_SEND, INPUT_PULLUP);
 }
 
 void setup() {
@@ -447,8 +573,16 @@ void handleStateButtons() {
         drawMainMenu();
         break;
       case STATE_MAIL_LIST:
-        mail_index = max(0, mail_index - 1);
-        drawMailList();
+        if (mail_index == 0) {
+          state = STATE_ADD_ID;
+          new_id_len = 0;
+          new_id_buf[0] = '\0';
+          char_index = 0;
+          drawAddIdScreen();
+        } else {
+          mail_index = max(0, mail_index - 1);
+          drawMailList();
+        }
         break;
       case STATE_MAIL_CONV:
         // no-op
@@ -461,6 +595,12 @@ void handleStateButtons() {
         drawWriteScreen();
         break;
       case STATE_HELP:
+        break;
+      case STATE_ADD_ID:
+        if (KB_TOTAL > 0) {
+          char_index = (char_index - 1 + KB_TOTAL) % KB_TOTAL;
+        }
+        drawAddIdScreen();
         break;
     }
   } else if (pressedDown()) {
@@ -484,6 +624,12 @@ void handleStateButtons() {
         drawWriteScreen();
         break;
       case STATE_HELP:
+        break;
+      case STATE_ADD_ID:
+        if (KB_TOTAL > 0) {
+          char_index = (char_index + 1) % KB_TOTAL;
+        }
+        drawAddIdScreen();
         break;
     }
   } else if (pressedOk()) {
@@ -521,6 +667,14 @@ void handleStateButtons() {
         break;
       case STATE_HELP:
         break;
+      case STATE_ADD_ID:
+        // Add selected char to buffer
+        if (new_id_len < (int)sizeof(new_id_buf) - 2 && KB_TOTAL > 0) {
+          new_id_buf[new_id_len++] = getKeyAtIndex(char_index);
+          new_id_buf[new_id_len] = '\0';
+        }
+        drawAddIdScreen();
+        break;
     }
   } else if (pressedCancel()) {
     lastDebounce = millis();
@@ -550,6 +704,16 @@ void handleStateButtons() {
       case STATE_HELP:
         state = STATE_MAIN_MENU;
         drawMainMenu();
+        break;
+      case STATE_ADD_ID:
+        // delete last char; if empty -> back to list
+        if (new_id_len > 0) {
+          new_id_buf[--new_id_len] = '\0';
+          drawAddIdScreen();
+        } else {
+          state = STATE_MAIL_LIST;
+          drawMailList();
+        }
         break;
     }
   }
