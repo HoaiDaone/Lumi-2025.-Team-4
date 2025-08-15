@@ -1,11 +1,11 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 
-const char* ssid = "TruongSon 2.4G";
-const char* password = "0987654321";
-const char* serverRegister = "http://192.168.1.7:5000/devices/register";
-const char* serverSend = "http://192.168.1.7:5000/messages/send";
-const char* serverInbox = "http://192.168.1.7:5000/messages/inbox?device_id=esp_test_01";
+const char* ssid = "VNU LIC 501";
+const char* password = "vnulic@2023";
+const char* serverRegister = "http://192.168.110.134:5000/devices/register";
+const char* serverSend = "http://192.168.110.134:5000/messages/send";
+const char* serverInbox = "http://192.168.110.134:5000/messages/inbox?device_id=esp_test_01";
 
 String deviceId = "esp_test_01";
 String receiverId = "esp_test_02";
