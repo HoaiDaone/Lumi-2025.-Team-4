@@ -1,7 +1,8 @@
 // ESP32 Messenger UI (4-buttons) + ST7735
 // - 4 nút: UP, DOWN, OK, CANCEL
-// - Menus: Main -> Mail / Help
+// - Menus: Main -> Mail / WiFi / Help
 // - Mail: danh sách mail, xem hội thoại, soạn tin (bằng nút)
+// - WiFi: scan, chọn SSID, nhập password (bằng nút)
 // - Help: hướng dẫn
 
 #include <WiFi.h>
@@ -9,12 +10,6 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <SPI.h>
-
-// --- Server URLs (quản lý ở đây) ---
-const char* SERVER_BASE_URL = "http://192.168.110.134:5000";
-const char* REGISTER_DEVICE_ENDPOINT = "/devices/register";
-const char* SEND_MESSAGE_ENDPOINT = "/messages/send";
-const char* FETCH_INBOX_ENDPOINT = "/messages/inbox";
 
 // --- PIN cấu hình (thay đổi nếu cần) ---
 #define TFT_CS     11
@@ -31,7 +26,7 @@ const char* FETCH_INBOX_ENDPOINT = "/messages/inbox";
 #define BTN_OK     7    // chọn / xác nhận
 #define BTN_CANCEL 6    // quay lại / xóa
 
-// Mạng (mặc định) - sử dụng để kết nối tự động
+// Mạng (mặc định)
 const char* default_ssid = "P-404B";
 const char* default_password = "88888888404B";
 
@@ -45,14 +40,18 @@ enum AppState {
   STATE_MAIL_LIST,
   STATE_MAIL_CONV,
   STATE_MAIL_WRITE,
+  STATE_WIFI_LIST,
+  STATE_WIFI_PASS,
   STATE_HELP
 };
 AppState state = STATE_MAIN_MENU;
 
 // Các biến điều hướng menu
-int main_index = 0;            // 0: Mail, 1: Help
+int main_index = 0;            // 0: Mail, 1: WiFi, 2: Help
 int mail_index = 0;
 int conv_index = 0;
+int wifi_index = 0;
+int wifi_pass_pos = 0;         // vị trí con trỏ nhập mật khẩu
 
 // Dữ liệu giả lập mail / conversation
 #define MAX_MAILS 6
@@ -84,6 +83,15 @@ int kb_row_lengths[KB_ROWS];
 int KB_TOTAL = 0;             // tổng số phím
 int char_index = 0;           // chỉ số toàn cục (0..KB_TOTAL-1) cho ký tự chọn
 
+// WiFi scan results (lưu local)
+#define MAX_WIFI 12
+String wifi_names[MAX_WIFI];
+int wifi_count = 0;
+String wifi_password_buffer = "";
+int wifi_pass_len = 0;
+int wifi_input_cursor = 0;
+int wifi_char_index = 0; // tương tự char_index nhưng cho WiFi input
+
 // Debounce
 unsigned long lastDebounce = 0;
 const unsigned long DEBOUNCE_MS = 200;
@@ -104,6 +112,7 @@ void initKeyboard() {
     KB_TOTAL += len;
   }
   if (char_index >= KB_TOTAL) char_index = 0;
+  if (wifi_char_index >= KB_TOTAL) wifi_char_index = 0;
 }
 
 char getKeyAtIndex(int idx) {
@@ -155,7 +164,10 @@ void drawMainMenu() {
   tft.print((main_index == 0) ? "> Mail" : "  Mail");
 
   tft.setCursor(8, 46);
-  tft.print((main_index == 1) ? "> Help" : "  Help");
+  tft.print((main_index == 1) ? "> WiFi Setting" : "  WiFi Setting");
+
+  tft.setCursor(8, 66);
+  tft.print((main_index == 2) ? "> Help" : "  Help");
 }
 
 // Mail list
@@ -277,6 +289,90 @@ void drawWriteScreen() {
 
 }
 
+// WiFi list screen
+void drawWifiList() {
+  tft.fillScreen(ST77XX_WHITE);
+  drawHeader("WiFi - Scan");
+
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_BLACK);
+
+  if (wifi_count == 0) {
+    tft.setCursor(6, 40);
+    tft.print("No networks scanned. Press OK to scan.");
+  } else {
+    int display = min(wifi_count, 5);
+    int start = max(0, wifi_index - 2);
+    if (start > wifi_count - display) start = max(0, wifi_count - display);
+    for (int i = 0; i < display && (start + i) < wifi_count; i++) {
+      int idx = start + i;
+      tft.setCursor(6, 20 + i*16);
+      if (idx == wifi_index) {
+        tft.setTextColor(ST77XX_WHITE);
+        tft.fillRect(4, 18 + i*16 - 2, 152, 14, ST77XX_BLUE);
+        tft.setCursor(6, 20 + i*16);
+        tft.print(wifi_names[idx]);
+        tft.setTextColor(ST77XX_BLACK);
+      } else {
+        tft.print(wifi_names[idx]);
+      }
+    }
+  }
+
+  tft.setCursor(6, 110);
+  tft.setTextColor(ST77XX_BLUE);
+  tft.print("OK: Select  CANCEL: Back");
+}
+
+// WiFi password input (uses same keyboard)
+void drawWifiPassword() {
+  tft.fillScreen(ST77XX_WHITE);
+  drawHeader("WiFi - Password");
+
+  tft.setTextSize(1);
+  tft.setTextColor(ST77XX_BLACK);
+
+  tft.setCursor(6, 22);
+  tft.print("SSID: ");
+  tft.print(wifi_names[wifi_index]);
+
+  tft.setCursor(6, 40);
+  tft.print("Pass: ");
+  tft.print(wifi_password_buffer);
+
+  // Draw keyboard grid (highlight wifi_char_index)
+  tft.setTextSize(1);
+  int cell_w = 12;
+  int cell_h = 12;
+  int top_y = 68;
+  for (int r = 0; r < KB_ROWS; r++) {
+    int row_len = kb_row_lengths[r];
+    int row_width = row_len * cell_w;
+    int start_x = (160 - row_width) / 2;
+    for (int c = 0; c < row_len; c++) {
+      int acc = 0;
+      for (int rr = 0; rr < r; rr++) acc += kb_row_lengths[rr];
+      int idx = acc + c;
+
+      int x = start_x + c * cell_w;
+      int y = top_y + r * (cell_h + 2);
+
+      if (idx == wifi_char_index) {
+        tft.fillRect(x-1, y-1, cell_w+2, cell_h+2, ST77XX_BLUE);
+        tft.setTextColor(ST77XX_WHITE);
+        tft.setCursor(x+2, y+1);
+        tft.print(getKeyAtIndex(idx));
+        tft.setTextColor(ST77XX_BLACK);
+      } else {
+        tft.drawRect(x-1, y-1, cell_w+2, cell_h+2, ST77XX_BLACK);
+        tft.setCursor(x+2, y+1);
+        tft.print(getKeyAtIndex(idx));
+      }
+    }
+  }
+
+}
+
 // Help screen
 void drawHelp() {
   tft.fillScreen(ST77XX_WHITE);
@@ -314,6 +410,24 @@ bool pressedCancel() {
   return digitalRead(BTN_CANCEL) == LOW;
 }
 
+// WiFi scan (synchronous) - fills wifi_names[]
+void doWifiScan() {
+  wifi_names[0] = "";
+  wifi_count = 0;
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
+  int n = WiFi.scanNetworks();
+  if (n <= 0) {
+    wifi_count = 0;
+  } else {
+    wifi_count = min(n, MAX_WIFI);
+    for (int i = 0; i < wifi_count; i++) {
+      wifi_names[i] = WiFi.SSID(i);
+    }
+  }
+}
+
 // Append a message to conversation (for the selected mail)
 void pushMessageToConv(int mailIdx, const String &m) {
   Conversation &c = convs[mailIdx];
@@ -332,7 +446,7 @@ void pushMessageToConv(int mailIdx, const String &m) {
 void registerDeviceToServer(const String &deviceId, const String &name) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin(String(SERVER_BASE_URL) + REGISTER_DEVICE_ENDPOINT);
+    http.begin("http://192.168.110.134:5000/devices/register");
     http.addHeader("Content-Type", "application/json");
     String jsonData = "{\"device_id\":\"" + deviceId + "\",\"name\":\"" + name + "\"}";
     int httpResponseCode = http.POST(jsonData);
@@ -346,7 +460,7 @@ void registerDeviceToServer(const String &deviceId, const String &name) {
 void sendMessageToServer(const String &fromId, const String &toId, const String &content) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    http.begin(String(SERVER_BASE_URL) + SEND_MESSAGE_ENDPOINT);
+    http.begin("http://192.168.110.134:5000/messages/send");
     http.addHeader("Content-Type", "application/json");
     String jsonData = "{\"sender_id\":\"" + fromId + "\",\"receiver_id\":\"" + toId + "\",\"content\":\"" + content + "\"}";
     int httpResponseCode = http.POST(jsonData);
@@ -360,7 +474,7 @@ void sendMessageToServer(const String &fromId, const String &toId, const String 
 void fetchInboxFromServer(const String &deviceId, int mailIdx) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    String url = String(SERVER_BASE_URL) + String(FETCH_INBOX_ENDPOINT) + "?device_id=" + deviceId;
+    String url = "http://192.168.110.134:5000/messages/inbox?device_id=" + deviceId;
     http.begin(url);
     int httpResponseCode = http.GET();
     if (httpResponseCode == 200) {
@@ -388,17 +502,6 @@ void setup() {
   Serial.begin(115200);
   setupPins();
 
-  // Kết nối WiFi tự động với SSID và password mặc định
-  WiFi.begin(default_ssid, default_password);
-  Serial.print("Connecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println(" Connected!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
   // init tft
   hspi.begin(TFT_SCLK, -1, TFT_MOSI);
   tft.initR(INITR_BLACKTAB);
@@ -411,21 +514,14 @@ void setup() {
   // init conversations empty
   for (int i = 0; i < MAX_MAILS; i++) convs[i].size = 0;
 
-  // Đăng ký thiết bị lên server (ví dụ dùng deviceId đầu tiên)
-  registerDeviceToServer(mail_ids[0], "ESP32S3");
+  // demo messages
+  pushMessageToConv(0, "Friend: Hello!");
+  pushMessageToConv(0, "You: Hi!");
 
   drawMainMenu();
 }
 
-// Thay thế gửi tin nhắn demo bằng gửi lên server
-void sendMessageNetwork(const char *payload, const String &toId) {
-  sendMessageToServer(mail_ids[0], toId, String(payload));
-  pushMessageToConv(mail_index, String("You: ") + String(payload));
-}
-
-// Có thể gọi fetchInboxFromServer(mail_ids[0], mail_index) khi cần cập nhật tin nhắn mới
-
-// --- State machine variables for repeating press handling
+// State machine variables for repeating press handling
 void handleStateButtons() {
   if (millis() - lastDebounce < DEBOUNCE_MS) return;
 
@@ -434,7 +530,7 @@ void handleStateButtons() {
     beep(30);
     switch (state) {
       case STATE_MAIN_MENU:
-        main_index = (main_index - 1 + 2) % 2;
+        main_index = (main_index - 1 + 3) % 3;
         drawMainMenu();
         break;
       case STATE_MAIL_LIST:
@@ -451,6 +547,18 @@ void handleStateButtons() {
         }
         drawWriteScreen();
         break;
+      case STATE_WIFI_LIST:
+        if (wifi_count > 0) {
+          wifi_index = max(0, wifi_index - 1);
+        }
+        drawWifiList();
+        break;
+      case STATE_WIFI_PASS:
+        if (KB_TOTAL > 0) {
+          wifi_char_index = (wifi_char_index - 1 + KB_TOTAL) % KB_TOTAL;
+        }
+        drawWifiPassword();
+        break;
       case STATE_HELP:
         break;
     }
@@ -459,7 +567,7 @@ void handleStateButtons() {
     beep(30);
     switch (state) {
       case STATE_MAIN_MENU:
-        main_index = (main_index + 1) % 2;
+        main_index = (main_index + 1) % 3;
         drawMainMenu();
         break;
       case STATE_MAIL_LIST:
@@ -474,6 +582,16 @@ void handleStateButtons() {
         }
         drawWriteScreen();
         break;
+      case STATE_WIFI_LIST:
+        if (wifi_count > 0) wifi_index = min(wifi_count - 1, wifi_index + 1);
+        drawWifiList();
+        break;
+      case STATE_WIFI_PASS:
+        if (KB_TOTAL > 0) {
+          wifi_char_index = (wifi_char_index + 1) % KB_TOTAL;
+        }
+        drawWifiPassword();
+        break;
       case STATE_HELP:
         break;
     }
@@ -486,6 +604,9 @@ void handleStateButtons() {
           state = STATE_MAIL_LIST;
           if (mail_index >= mail_count) mail_index = 0;
           drawMailList();
+        } else if (main_index == 1) {
+          state = STATE_WIFI_LIST;
+          drawWifiList();
         } else {
           state = STATE_HELP;
           drawHelp();
@@ -509,6 +630,24 @@ void handleStateButtons() {
           write_buf[write_len] = '\0';
         }
         drawWriteScreen();
+        break;
+      case STATE_WIFI_LIST:
+        if (wifi_count > 0) {
+          state = STATE_WIFI_PASS;
+          wifi_password_buffer = "";
+          wifi_pass_len = 0;
+          wifi_char_index = 0;
+          drawWifiPassword();
+        } else {
+          doWifiScan();
+          drawWifiList();
+        }
+        break;
+      case STATE_WIFI_PASS:
+        if ((int)wifi_password_buffer.length() < 60 && KB_TOTAL > 0) {
+          wifi_password_buffer += getKeyAtIndex(wifi_char_index);
+        }
+        drawWifiPassword();
         break;
       case STATE_HELP:
         break;
@@ -538,6 +677,19 @@ void handleStateButtons() {
           drawConversation();
         }
         break;
+      case STATE_WIFI_LIST:
+        state = STATE_MAIN_MENU;
+        drawMainMenu();
+        break;
+      case STATE_WIFI_PASS:
+        if (wifi_password_buffer.length() > 0) {
+          wifi_password_buffer.remove(wifi_password_buffer.length() - 1);
+          drawWifiPassword();
+        } else {
+          state = STATE_WIFI_LIST;
+          drawWifiList();
+        }
+        break;
       case STATE_HELP:
         state = STATE_MAIN_MENU;
         drawMainMenu();
@@ -546,7 +698,7 @@ void handleStateButtons() {
   }
 }
 
-// Long-press OK for sending message (kept as before, removed WiFi part)
+// Long-press OK for sending message / connecting WiFi (kept as before)
 void checkLongPressSend() {
   static unsigned long okDownTime = 0;
   static bool okWasDown = false;
@@ -564,6 +716,30 @@ void checkLongPressSend() {
           state = STATE_MAIL_CONV;
           drawConversation();
           beep(100);
+        } else if (state == STATE_WIFI_PASS && wifi_password_buffer.length() > 0) {
+          tft.fillScreen(ST77XX_WHITE);
+          drawHeader("WiFi - Connecting");
+          tft.setCursor(6, 30);
+          tft.setTextColor(ST77XX_BLACK);
+          tft.print("Connecting to ");
+          tft.println(wifi_names[wifi_index]);
+          WiFi.begin(wifi_names[wifi_index].c_str(), wifi_password_buffer.c_str());
+          unsigned long start = millis();
+          while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
+            delay(200);
+            tft.print(".");
+          }
+          if (WiFi.status() == WL_CONNECTED) {
+            tft.println();
+            tft.print("OK IP:");
+            tft.println(WiFi.localIP());
+          } else {
+            tft.println();
+            tft.println("Failed");
+          }
+          delay(900);
+          state = STATE_WIFI_LIST;
+          drawWifiList();
         }
         while (digitalRead(BTN_OK) == LOW) delay(10);
       }
@@ -573,6 +749,19 @@ void checkLongPressSend() {
   }
 }
 
+
+void registerDeviceToServer(const String &deviceId, const String &name) {
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    http.begin("http://<SERVER_IP>:5000/devices/register");
+    http.addHeader("Content-Type", "application/json");
+    String jsonData = "{\"device_id\":\"" + deviceId + "\",\"name\":\"" + name + "\"}";
+    int httpResponseCode = http.POST(jsonData);
+    Serial.print("Dang ky thiet bi: ");
+    Serial.println(httpResponseCode);
+    http.end();
+  }
+}
 void loop() {
   handleStateButtons();
   checkLongPressSend();
