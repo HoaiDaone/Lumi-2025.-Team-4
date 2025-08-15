@@ -11,7 +11,7 @@
 #include <SPI.h>
 
 // --- Server URLs (quản lý ở đây) ---
-const char* SERVER_BASE_URL = "http://192.168.110.134:5000";
+const char* SERVER_BASE_URL = "http://192.168.1.15:5000";
 const char* REGISTER_DEVICE_ENDPOINT = "/devices/register";
 const char* SEND_MESSAGE_ENDPOINT = "/messages/send";
 const char* FETCH_INBOX_ENDPOINT = "/messages/inbox";
@@ -30,10 +30,10 @@ const char* FETCH_INBOX_ENDPOINT = "/messages/inbox";
 #define BTN_DOWN   15   // di chuyển xuống / ký tự sau
 #define BTN_OK     7    // chọn / xác nhận
 #define BTN_CANCEL 6    // quay lại / xóa
-
+#define BTN_SEND   0    // gửi
 // Mạng (mặc định) - sử dụng để kết nối tự động
-const char* default_ssid = "P-404B";
-const char* default_password = "88888888404B";
+const char* default_ssid = "My Home";
+const char* default_password = "0898624555";
 
 // ST7735 (HSPI)
 SPIClass hspi(HSPI);
@@ -57,7 +57,7 @@ int conv_index = 0;
 // Dữ liệu giả lập mail / conversation
 #define MAX_MAILS 6
 #define MAX_MESSAGES_PER_1 12
-String mail_ids[MAX_MAILS] = {"ESP32_A", "ESP32_B", "ESP32_C", "Lumi", "Device5", "Device6"};
+String mail_ids[MAX_MAILS] = {"ESP32_A", "ESP32_B", "ESP32_C"};
 int mail_count = 6;
 
 struct Conversation {
@@ -338,7 +338,12 @@ void registerDeviceToServer(const String &deviceId, const String &name) {
     int httpResponseCode = http.POST(jsonData);
     Serial.print("Dang ky thiet bi: ");
     Serial.println(httpResponseCode);
+    if (httpResponseCode <= 0) {
+      Serial.println("Loi: Khong ket noi duoc server hoac server khong phan hoi!");
+    }
     http.end();
+  } else {
+    Serial.println("Loi: WiFi chua ket noi!");
   }
 }
 
@@ -388,17 +393,6 @@ void setup() {
   Serial.begin(115200);
   setupPins();
 
-  // Kết nối WiFi tự động với SSID và password mặc định
-  WiFi.begin(default_ssid, default_password);
-  Serial.print("Connecting to WiFi...");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println(" Connected!");
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
-
   // init tft
   hspi.begin(TFT_SCLK, -1, TFT_MOSI);
   tft.initR(INITR_BLACKTAB);
@@ -411,8 +405,23 @@ void setup() {
   // init conversations empty
   for (int i = 0; i < MAX_MAILS; i++) convs[i].size = 0;
 
-  // Đăng ký thiết bị lên server (ví dụ dùng deviceId đầu tiên)
-  registerDeviceToServer(mail_ids[0], "ESP32S3");
+  // Kết nối WiFi
+  Serial.print("Connecting to WiFi...");
+  WiFi.begin(default_ssid, default_password);
+  int wifiTries = 0;
+  while (WiFi.status() != WL_CONNECTED && wifiTries < 30) {
+    delay(500);
+    Serial.print(".");
+    wifiTries++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi connected!");
+    // Đăng ký thiết bị mới với Server (dùng deviceId đầu tiên)
+    Serial.print("Dang ky thiet bi len server...");
+    registerDeviceToServer(mail_ids[0], "ESP32S3");
+  } else {
+    Serial.println("\nWiFi connection FAILED!");
+  }
 
   drawMainMenu();
 }
@@ -576,5 +585,21 @@ void checkLongPressSend() {
 void loop() {
   handleStateButtons();
   checkLongPressSend();
+  checkSendButton();
+  autoFetchInbox();
   delay(30);
+}
+
+// --- Tự động kiểm tra tin nhắn mới mỗi 5 giây ---
+unsigned long lastInboxCheck = 0;
+const unsigned long INBOX_INTERVAL = 5000;
+void autoFetchInbox() {
+  if (millis() - lastInboxCheck > INBOX_INTERVAL) {
+    lastInboxCheck = millis();
+    // Chỉ kiểm tra khi đã kết nối WiFi và đang ở các trạng thái liên quan đến mail
+    if (WiFi.status() == WL_CONNECTED) {
+      // Lấy tin nhắn mới cho thiết bị hiện tại (mail_ids[0])
+      fetchInboxFromServer(mail_ids[0], mail_index);
+    }
+  }
 }
