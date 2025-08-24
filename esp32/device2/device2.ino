@@ -1,6 +1,5 @@
 // ESP32 Messenger UI (4-buttons) + ST7735
 // - 4 nút: UP, DOWN, OK, CANCEL
-// - Menus: Main -> Mail / Help
 // - Mail: danh sách mail, xem hội thoại, soạn tin (bằng nút)
 // - Help: hướng dẫn
 
@@ -12,7 +11,7 @@
 #include <ArduinoJson.h>
 
 // --- Server URLs (quản lý ở đây) ---
-const char* SERVER_BASE_URL = "http://192.168.1.15:5000";
+const char* SERVER_BASE_URL = "http://192.168.1.14:5000";
 const char* REGISTER_DEVICE_ENDPOINT = "/devices/register";
 const char* SEND_MESSAGE_ENDPOINT = "/messages/send";
 const char* FETCH_INBOX_ENDPOINT = "/messages/inbox";
@@ -32,9 +31,9 @@ const char* FETCH_INBOX_ENDPOINT = "/messages/inbox";
 #define BTN_OK     7    // chọn / xác nhận
 #define BTN_CANCEL 6    // quay lại / xóa
 #define BTN_SEND   0    // gửi
-// Mạng (mặc định) - sử dụng để kết nối tự động
-const char* default_ssid = "My Home";
-const char* default_password = "0898624555";
+// 
+const char* default_ssid = "TruongSon 2.4G";
+const char* default_password = "0987654321";
 
 // ST7735 (HSPI)
 SPIClass hspi(HSPI);
